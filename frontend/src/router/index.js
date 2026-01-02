@@ -53,6 +53,11 @@ const routes = [
         name: 'Metas',
         component: () => import('../views/GoalsView.vue')
     },
+    {
+        path: '/transactions',
+        name: 'Transactions',
+        component: () => import('../views/TransactionsView.vue')
+    },
 
     // --- NOVAS ROTAS (Metas & Investimentos) ---
     {

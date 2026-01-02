@@ -1,120 +1,140 @@
 import uuid
 from datetime import date, datetime
 from dateutil.relativedelta import relativedelta
+from decimal import Decimal
 from sqlalchemy.orm import Session
-from sqlalchemy import select
-from app.models.tables import Transaction, Account, CreditCard, CreditCardBill, BillStatus
-from app.schemas.transaction import TransactionCreate
+from app.models.tables import Transaction, CreditCard, TransactionStatus
+from app.schemas.transaction import TransactionCreate, TransactionUpdate
+from app.services.finance import FinanceService
 
 class TransactionService:
     def __init__(self, db: Session):
         self.db = db
 
-    def create(self, tx_data: TransactionCreate):
+    # CORREÇÃO: Adicionado parâmetro user_id obrigatório
+    def create(self, user_id: int, tx_data: TransactionCreate):
+        # Validações Básicas
         if tx_data.amount <= 0:
             raise ValueError("O valor da transação deve ser positivo.")
         
-        # VALIDAÇÃO: Impedir Recorrência + Parcelamento simultâneo
-        if tx_data.is_recurring and (tx_data.total_installments and tx_data.total_installments > 1):
-            raise ValueError("Não é possível criar uma transação que seja Recorrente e Parcelada ao mesmo tempo.")
+        if tx_data.is_recurring and (tx_data.installment_total and tx_data.installment_total > 1):
+            raise ValueError("Não é possível criar transação Recorrente e Parcelada ao mesmo tempo.")
 
         try:
+            # --- ROTA CRÉDITO ---
             if tx_data.payment_method == "credito":
-                if not tx_data.credit_card_id:
+                if not tx_data.card_id:
                     raise ValueError("ID do cartão de crédito é obrigatório.")
-                tx_data.type = "despesa" 
                 
+                # Se for Recorrente (Assinatura Mensal), tratamos aqui
                 if tx_data.is_recurring:
-                    return self._create_credit_recurring(tx_data)
-                else:
-                    return self._create_credit_installments(tx_data)
+                    return self._create_credit_recurring(user_id, tx_data)
+                
+                # Se for Parcelado ou À Vista no Crédito, o FinanceService resolve
+                created_txs = FinanceService.process_credit_card_purchase(
+                    self.db, 
+                    user_id, # Usa o ID real do usuário logado
+                    tx_data.card_id, 
+                    tx_data.dict()
+                )
+                return created_txs[0] if created_txs else None
+
+            # --- ROTA DÉBITO / PIX ---
             else:
-                return self._create_debit_transaction(tx_data)
+                return self._create_debit_transaction(user_id, tx_data)
+
         except Exception as e:
-            self.db.rollback() 
+            self.db.rollback()
             print(f"ERRO CREATE TRANSACTION: {e}")
             raise e
 
-    def _create_debit_transaction(self, tx_data: TransactionCreate):
+    def _create_debit_transaction(self, user_id: int, tx_data: TransactionCreate):
+        """
+        Cria transações de débito (pode ser única ou recorrente 12x).
+        """
         repeat_count = 12 if tx_data.is_recurring else 1
         group_id = str(uuid.uuid4()) if tx_data.is_recurring else None
         
-        base_date = tx_data.date if isinstance(tx_data.date, date) else tx_data.date.date()
+        base_date = tx_data.date
         created_transactions = []
-        
-        # Pega a data de hoje para comparação
         today = date.today()
 
         for i in range(repeat_count):
             target_date = base_date + relativedelta(months=i)
             
-            # --- NOVA LÓGICA DE STATUS ---
-            # Se a data for hoje ou no passado -> Nasce PAGO
-            # Se a data for futura -> Nasce PENDENTE
+            # Lógica: Se data é hoje ou passado -> PAGO. Futuro -> PENDENTE.
             if target_date <= today:
-                current_status = "pago"
+                current_status = TransactionStatus.PAID
             else:
-                current_status = "pendente"
-            # -----------------------------
+                current_status = TransactionStatus.PENDING
 
             db_obj = Transaction(
+                user_id=user_id, # ID Real
                 description=tx_data.description,
-                amount=tx_data.amount,
+                amount=Decimal(str(tx_data.amount)),
                 type=tx_data.type,
                 date=target_date,
                 category_id=tx_data.category_id,
-                account_id=tx_data.account_id or 1,
+                account_id=tx_data.account_id,
                 is_recurring=tx_data.is_recurring,
                 frequency=tx_data.frequency,
-                payment_method="debito",
-                status=current_status, # Usa a variável calculada acima
+                payment_method=tx_data.payment_method,
+                status=current_status,
                 installment_group_id=group_id,
-                debtor_name=tx_data.debtor_name
+                debtor_id=tx_data.debtor_id
             )
             self.db.add(db_obj)
             created_transactions.append(db_obj)
 
-            # Atualiza saldo apenas se o status calculado for pago
-            if current_status == "pago":
-                self._update_account_balance(db_obj.account_id, tx_data.amount, tx_data.type)
-
         self.db.commit()
+        
+        # Recalcula saldo apenas se houver transações pagas e uma conta vinculada
+        if tx_data.account_id:
+            FinanceService.recalculate_account_balance(self.db, tx_data.account_id)
+
         if created_transactions:
             self.db.refresh(created_transactions[0])
             return created_transactions[0]
         return None
 
-    def _create_credit_recurring(self, tx_data: TransactionCreate):
-        card = self.db.get(CreditCard, tx_data.credit_card_id)
+    def _create_credit_recurring(self, user_id: int, tx_data: TransactionCreate):
+        """
+        Cria assinaturas no crédito (12 meses fixos).
+        """
+        card = self.db.get(CreditCard, tx_data.card_id)
         if not card: raise ValueError("Cartão não encontrado.")
 
         group_id = str(uuid.uuid4())
-        base_date = tx_data.date if isinstance(tx_data.date, date) else tx_data.date.date()
+        base_date = tx_data.date
         created_transactions = []
 
         for i in range(12):
             display_date = base_date + relativedelta(months=i)
+            
+            # Lógica de Fechamento para alocar na fatura correta
             if display_date.day >= card.closing_day:
-                bill_reference_date = display_date + relativedelta(months=1)
+                bill_date = display_date + relativedelta(months=1)
             else:
-                bill_reference_date = display_date
+                bill_date = display_date
 
-            bill = self._get_or_create_bill(card.id, bill_reference_date.month, bill_reference_date.year)
+            bill = FinanceService._get_or_create_bill(self.db, card.id, bill_date.month, bill_date.year)
 
             db_obj = Transaction(
+                user_id=user_id, # ID Real
                 description=tx_data.description, 
-                amount=tx_data.amount,
-                type="despesa",
+                amount=Decimal(str(tx_data.amount)),
+                type="expense", 
                 date=display_date, 
                 category_id=tx_data.category_id,
+                card_id=card.id,
                 bill_id=bill.id,
                 is_installment=False,
                 installment_group_id=group_id,
                 payment_method="credito",
-                status="pendente",
+                status=TransactionStatus.PENDING,
                 is_recurring=True,
                 frequency="mensal",
-                debtor_name=tx_data.debtor_name
+                debtor_id=tx_data.debtor_id
             )
             self.db.add(db_obj)
             created_transactions.append(db_obj)
@@ -123,86 +143,20 @@ class TransactionService:
         if created_transactions: self.db.refresh(created_transactions[0])
         return created_transactions[0]
 
-    def _create_credit_installments(self, tx_data: TransactionCreate):
-        card = self.db.get(CreditCard, tx_data.credit_card_id)
-        if not card: raise ValueError("Cartão não encontrado.")
-
-        installments = tx_data.total_installments or 1
-        installment_amount = round(tx_data.amount / installments, 2)
-        remainder = round(tx_data.amount - (installment_amount * installments), 2)
-        group_id = str(uuid.uuid4()) if installments > 1 else None
-        
-        purchase_date = tx_data.date if isinstance(tx_data.date, date) else tx_data.date.date()
-        created_transactions = []
-
-        for i in range(installments):
-            current_amount = installment_amount + remainder if i == 0 else installment_amount
-            display_date = purchase_date + relativedelta(months=i)
-            
-            if display_date.day >= card.closing_day:
-                bill_reference_date = display_date + relativedelta(months=1)
-            else:
-                bill_reference_date = display_date
-
-            bill = self._get_or_create_bill(card.id, bill_reference_date.month, bill_reference_date.year)
-            desc_suffix = f" ({i+1}/{installments})" if installments > 1 else ""
-            
-            db_obj = Transaction(
-                description=f"{tx_data.description}{desc_suffix}",
-                amount=current_amount,
-                type="despesa",
-                date=display_date, 
-                category_id=tx_data.category_id,
-                bill_id=bill.id,
-                is_installment=(installments > 1),
-                installment_current=i+1 if installments > 1 else None,
-                installment_total=installments if installments > 1 else None,
-                installment_group_id=group_id,
-                payment_method="credito",
-                status="pendente",
-                is_recurring=False,
-                debtor_name=tx_data.debtor_name
-            )
-            self.db.add(db_obj)
-            created_transactions.append(db_obj)
-
-        self.db.commit()
-        if created_transactions: self.db.refresh(created_transactions[0])
-        return created_transactions[0]
-
-    def delete(self, transaction_id: int):
+    # CORREÇÃO: Adicionado user_id para segurança (IDOR)
+    def update(self, user_id: int, transaction_id: int, update_data: dict):
         try:
-            tx = self.db.get(Transaction, transaction_id)
-            if not tx: raise ValueError("Transação não encontrada.")
-            group_id = tx.installment_group_id
-            transactions_to_delete = []
+            # Busca garantindo que a transação pertence ao usuário logado
+            tx = self.db.query(Transaction).filter(
+                Transaction.id == transaction_id,
+                Transaction.user_id == user_id 
+            ).first()
+            
+            if not tx: return None # Retorna None se não achar ou não for dono
 
-            if group_id:
-                transactions_to_delete = self.db.query(Transaction).filter(
-                    Transaction.installment_group_id == group_id
-                ).all()
-            else:
-                transactions_to_delete = [tx]
+            old_account_id = tx.account_id
 
-            for t in transactions_to_delete:
-                if t.payment_method == "debito" and t.status == "pago":
-                    self._update_account_balance(t.account_id, t.amount, t.type, is_reversal=True)
-                self.db.delete(t)
-
-            self.db.commit()
-            return {"message": "Transações excluídas."}
-        except Exception as e:
-            self.db.rollback()
-            raise e
-
-    def update(self, transaction_id: int, update_data: dict):
-        try:
-            tx = self.db.get(Transaction, transaction_id)
-            if not tx: raise ValueError("Transação não encontrada.")
-
-            if tx.payment_method == "debito" and tx.status == "pago":
-                self._update_account_balance(tx.account_id, tx.amount, tx.type, is_reversal=True)
-
+            # Atualiza campos
             for key, value in update_data.items():
                 if key != 'id': 
                     if key == 'date' and isinstance(value, str):
@@ -210,47 +164,49 @@ class TransactionService:
                         except ValueError: pass 
                     setattr(tx, key, value)
 
-            if tx.payment_method == "debito" and tx.status == "pago":
-                self._update_account_balance(tx.account_id, tx.amount, tx.type, is_reversal=False)
-
             self.db.commit()
             self.db.refresh(tx)
+
+            # Recalcula saldos
+            if old_account_id:
+                FinanceService.recalculate_account_balance(self.db, old_account_id)
+            if tx.account_id and tx.account_id != old_account_id:
+                FinanceService.recalculate_account_balance(self.db, tx.account_id)
+
             return tx
         except Exception as e:
             self.db.rollback()
             print(f"ERRO UPDATE: {e}")
             raise e
 
-    def _get_or_create_bill(self, card_id, month, year):
-        stmt = select(CreditCardBill).where(
-            CreditCardBill.card_id == card_id, 
-            CreditCardBill.month == month, 
-            CreditCardBill.year == year
-        )
-        bill = self.db.execute(stmt).scalars().first()
-        if not bill:
-            bill = CreditCardBill(card_id=card_id, month=month, year=year, status=BillStatus.OPEN)
-            self.db.add(bill)
-            self.db.flush()
-        return bill
-
-    # --- CORREÇÃO AQUI: AUTO-CRIAÇÃO DA CONTA ---
-    def _update_account_balance(self, account_id, amount, type, is_reversal=False):
-        account = self.db.get(Account, account_id)
-        
-        # Se a conta não existe, cria ela agora para não perder o saldo
-        if not account:
-            print(f"⚠️ Conta {account_id} não encontrada! Criando automaticamente...")
-            # Cria a conta padrão se não existir
-            account = Account(id=account_id, name="Carteira", current_balance=0.0)
-            self.db.add(account)
-            self.db.flush() # Garante que ela exista para o update abaixo
-
-        if type == "receita":
-            if is_reversal: account.current_balance -= amount
-            else: account.current_balance += amount
-        else: 
-            if is_reversal: account.current_balance += amount
-            else: account.current_balance -= amount
+    # CORREÇÃO: Adicionado user_id para segurança
+    def delete(self, user_id: int, transaction_id: int):
+        try:
+            tx = self.db.query(Transaction).filter(
+                Transaction.id == transaction_id,
+                Transaction.user_id == user_id
+            ).first()
             
-        self.db.add(account)
+            if not tx: return False
+            
+            group_id = tx.installment_group_id
+            account_id = tx.account_id
+            
+            # Se faz parte de um grupo, deleta todos DO MESMO USUÁRIO
+            if group_id:
+                self.db.query(Transaction).filter(
+                    Transaction.installment_group_id == group_id,
+                    Transaction.user_id == user_id
+                ).delete()
+            else:
+                self.db.delete(tx)
+
+            self.db.commit()
+
+            if account_id:
+                FinanceService.recalculate_account_balance(self.db, account_id)
+                
+            return True
+        except Exception as e:
+            self.db.rollback()
+            raise e

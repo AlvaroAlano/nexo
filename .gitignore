@@ -1,14 +1,26 @@
-# Python / Backend
+# --- Segurança (NUNCA ENVIE ISSO) ---
+.env
+.env.local
+secrets.py
+
+# --- Lixo do Python ---
 __pycache__/
 *.py[cod]
 venv/
-.env
-db.sqlite3
-*.sqlite3
-nexo # seu arquivo de banco atual
+.venv/
+env/
 
-# Node / Frontend
+# --- Lixo do Sistema ---
+.DS_Store
+Thumbs.db
+
+# --- Logs e Banco SQLite (se ainda tiver) ---
+*.log
+*.sqlite
+*.db
+nexo.db
+
+# --- Frontend (Node) ---
 node_modules/
 dist/
-.DS_Store
-.vscode/
+.output/

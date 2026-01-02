@@ -2,8 +2,8 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
 from app.db.session import engine, Base, SessionLocal
-# Importamos Account, User e Category
-from app.models.tables import Account, User, Category
+# Importamos Account, User, Category e o Enum TransactionType
+from app.models.tables import Account, User, Category, TransactionType
 from app.api.v1.api import api_router
 
 # Cria as tabelas no banco (se não existirem)
@@ -14,24 +14,19 @@ app = FastAPI(
     version="2.0.0"
 )
 
-# --- CONFIGURAÇÃO CORS ---
-origins = [
-    "http://localhost:3000",
-    "http://localhost:5173",
-    "http://127.0.0.1:5173",
-]
-
+# --- CONFIGURAÇÃO CORS (CORRIGIDA) ---
+# Em desenvolvimento, liberamos TUDO ["*"] para evitar dor de cabeça com portas e IPs
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=["*"],  # <--- MUDANÇA CRÍTICA: Aceita qualquer origem (Frontend)
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["*"],  # Aceita GET, POST, PUT, DELETE, OPTIONS...
+    allow_headers=["*"],  # Aceita todos os headers
 )
 
 app.include_router(api_router, prefix="/api/v1")
 
-# --- FUNÇÃO DE INICIALIZAÇÃO (AGORA COM CATEGORIAS) ---
+# --- FUNÇÃO DE INICIALIZAÇÃO ---
 def init_db():
     db = SessionLocal()
     try:
@@ -63,26 +58,27 @@ def init_db():
             db.commit()
             print("✅ Conta 'Carteira' criada!")
 
-        # 3. Cria Categorias Padrão (Se não existirem)
-        # Verifica se já tem alguma categoria
+        # 3. Verifica/Cria Categorias Padrão
         has_categories = db.query(Category).filter(Category.user_id == user.id).first()
         
         if not has_categories:
             print("📂 Criando categorias padrão...")
+            # OBS: Atualizei os 'types' para bater com o Enum do banco (income, expense, transf)
+            # "investment" não existe no Enum, então usamos "expense" (saída) ou "transf"
             default_categories = [
                 # Despesas
-                {"name": "Alimentação", "type": "expense", "icon": "Utensils", "color": "bg-orange-500"},
-                {"name": "Moradia", "type": "expense", "icon": "Home", "color": "bg-blue-500"},
-                {"name": "Transporte", "type": "expense", "icon": "Car", "color": "bg-zinc-500"},
-                {"name": "Lazer", "type": "expense", "icon": "Coffee", "color": "bg-purple-500"},
-                {"name": "Saúde", "type": "expense", "icon": "Heart", "color": "bg-rose-500"},
-                {"name": "Compras", "type": "expense", "icon": "ShoppingCart", "color": "bg-pink-500"},
+                {"name": "Alimentação", "type": TransactionType.EXPENSE.value, "icon": "Utensils", "color": "bg-orange-500"},
+                {"name": "Moradia", "type": TransactionType.EXPENSE.value, "icon": "Home", "color": "bg-blue-500"},
+                {"name": "Transporte", "type": TransactionType.EXPENSE.value, "icon": "Car", "color": "bg-zinc-500"},
+                {"name": "Lazer", "type": TransactionType.EXPENSE.value, "icon": "Coffee", "color": "bg-purple-500"},
+                {"name": "Saúde", "type": TransactionType.EXPENSE.value, "icon": "Heart", "color": "bg-rose-500"},
+                {"name": "Compras", "type": TransactionType.EXPENSE.value, "icon": "ShoppingCart", "color": "bg-pink-500"},
                 # Receitas
-                {"name": "Salário", "type": "income", "icon": "Briefcase", "color": "bg-emerald-500"},
-                {"name": "Investimentos", "type": "income", "icon": "TrendingUp", "color": "bg-amber-500"},
-                {"name": "Extra", "type": "income", "icon": "Zap", "color": "bg-teal-500"},
-                # Investimento (Categoria de Saída para aporte)
-                {"name": "Aporte", "type": "investment", "icon": "PieChart", "color": "bg-indigo-500"},
+                {"name": "Salário", "type": TransactionType.INCOME.value, "icon": "Briefcase", "color": "bg-emerald-500"},
+                {"name": "Investimentos", "type": TransactionType.INCOME.value, "icon": "TrendingUp", "color": "bg-amber-500"},
+                {"name": "Extra", "type": TransactionType.INCOME.value, "icon": "Zap", "color": "bg-teal-500"},
+                # Investimento (Saída) - Ajustado para EXPENSE pois INVESTMENT não existe no Enum
+                {"name": "Aporte", "type": TransactionType.EXPENSE.value, "icon": "PieChart", "color": "bg-indigo-500"},
             ]
 
             for cat in default_categories:
