@@ -14,6 +14,22 @@ app = FastAPI(
     version="2.0.0"
 )
 
+# --- CONFIGURAÇÃO CORS ---
+origins = [
+    "http://localhost:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://nexo-swart.vercel.app",  # <--- ADICIONE ESTA LINHA (Seu link da Vercel)
+]
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=origins, # <--- Garanta que está usando a lista 'origins' aqui
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 # --- CONFIGURAÇÃO CORS (CORRIGIDA) ---
 # Em desenvolvimento, liberamos TUDO ["*"] para evitar dor de cabeça com portas e IPs
 app.add_middleware(
