@@ -1,117 +1,85 @@
 from sqlalchemy.orm import Session
-from sqlalchemy import func, and_, text
-from datetime import date, timedelta
-from decimal import Decimal
-import calendar
-
-# Importa os modelos e enums novos
-from app.models.tables import Transaction, Account, Category, TransactionType, TransactionStatus
+from sqlalchemy import func, extract, case
+from datetime import datetime
+from app.models.tables import Transaction, Category
 
 class DashboardService:
-    def __init__(self, db: Session):
-        self.db = db
-
-    # ADICIONADO user_id: Obrigatório para não vazar dados de outros usuários
-    def get_summary(self, user_id: int, month: int, year: int):
-        
-        start_date = date(year, month, 1)
-        last_day = calendar.monthrange(year, month)[1]
-        end_date = date(year, month, last_day)
-
-        # 1. Saldo Atual (Filtrado por USER_ID!)
-        # Retorna Decimal para não perder precisão
-        current_balance = self.db.query(func.sum(Account.current_balance)).filter(
-            Account.user_id == user_id
-        ).scalar() or Decimal(0)
-
-        # Filtros comuns para reutilizar
-        base_filters = [
+    @staticmethod
+    def get_summary(db: Session, user_id: int, month: int, year: int):
+        # Cálculos de Entrada e Saída usando CASE WHEN para ser compatível com Postgres
+        # Soma apenas se type for 'income', senão 0
+        income = db.query(func.sum(Transaction.value)).filter(
             Transaction.user_id == user_id,
-            Transaction.date >= start_date,
-            Transaction.date <= end_date
-        ]
+            Transaction.type == 'income',
+            extract('month', Transaction.date) == month,
+            extract('year', Transaction.date) == year
+        ).scalar() or 0
 
-        # 2. Fluxo do Mês
-        income = self.db.query(func.sum(Transaction.amount)).filter(
-            *base_filters,
-            Transaction.type == TransactionType.INCOME
-        ).scalar() or Decimal(0)
-
-        expense = self.db.query(func.sum(Transaction.amount)).filter(
-            *base_filters,
-            Transaction.type == TransactionType.EXPENSE
-        ).scalar() or Decimal(0)
-
-        # 3. Pendências (Runway)
-        # Usamos TransactionStatus.PENDING
-        pending_income = self.db.query(func.sum(Transaction.amount)).filter(
+        # Soma apenas se type for 'expense', senão 0
+        expense = db.query(func.sum(Transaction.value)).filter(
             Transaction.user_id == user_id,
-            Transaction.date <= end_date,
-            Transaction.status == TransactionStatus.PENDING,
-            Transaction.type == TransactionType.INCOME
-        ).scalar() or Decimal(0)
+            Transaction.type == 'expense',
+            extract('month', Transaction.date) == month,
+            extract('year', Transaction.date) == year
+        ).scalar() or 0
 
-        pending_expense = self.db.query(func.sum(Transaction.amount)).filter(
-            Transaction.user_id == user_id,
-            Transaction.date <= end_date,
-            Transaction.status == TransactionStatus.PENDING,
-            Transaction.type == TransactionType.EXPENSE
-        ).scalar() or Decimal(0)
-
-        projected_balance = current_balance + pending_income - pending_expense
-
-        # 4. Commitment Ratio
-        commitment_ratio = 0
-        if income > 0:
-            commitment_ratio = int((expense / income) * 100)
-        elif expense > 0:
-            commitment_ratio = 100 
+        balance = income - expense
 
         return {
-            "balance": current_balance,
-            "month_income": income,
-            "month_expense": expense,
-            "projected_balance": projected_balance,
-            "commitment_ratio": commitment_ratio
+            "income": float(income),
+            "expense": float(expense),
+            "balance": float(balance)
         }
 
-    def get_category_breakdown(self, user_id: int, month: int, year: int):
-        """Retorna dados para o gráfico de Donut (Filtrado por usuário)"""
-        start_date = date(year, month, 1)
-        last_day = calendar.monthrange(year, month)[1]
-        end_date = date(year, month, last_day)
+    @staticmethod
+    def get_upcoming_transactions(db: Session, user_id: int):
+        today = datetime.now().date()
+        
+        # AQUI ESTAVA O ERRO: Removemos 'despesa', 'saida', etc.
+        # Usamos apenas 'expense' que é o que o banco aceita.
+        upcoming = db.query(Transaction)\
+            .filter(
+                Transaction.user_id == user_id,
+                Transaction.date >= today,
+                Transaction.status == 'pending',
+                Transaction.type == 'expense' 
+            )\
+            .order_by(Transaction.date.asc())\
+            .limit(5)\
+            .all()
+            
+        return upcoming
 
-        results = self.db.query(
+    @staticmethod
+    def get_category_chart(db: Session, user_id: int, month: int, year: int):
+        # Busca gastos por categoria
+        results = db.query(
             Category.name,
             Category.color,
-            func.sum(Transaction.amount).label('total')
-        ).join(Transaction, Transaction.category_id == Category.id)\
-         .filter(
-            Transaction.user_id == user_id, # Segurança
-            Transaction.date >= start_date,
-            Transaction.date <= end_date,
-            Transaction.type == TransactionType.EXPENSE
-         )\
-         .group_by(Category.name, Category.color)\
-         .order_by(text('total DESC'))\
-         .all()
+            func.sum(Transaction.value).label('total')
+        )\
+        .join(Transaction)\
+        .filter(
+            Transaction.user_id == user_id,
+            Transaction.type == 'expense',
+            extract('month', Transaction.date) == month,
+            extract('year', Transaction.date) == year
+        )\
+        .group_by(Category.id, Category.name, Category.color)\
+        .all()
 
-        return [
-            {"name": r.name, "value": r.total, "color": r.color} 
-            for r in results
-        ]
-
-    def get_upcoming_transactions(self, user_id: int, days: int = 7):
-        """Busca contas a pagar (Despesas Pendentes) nos próximos X dias"""
-        today = date.today()
-        limit_date = today + timedelta(days=days)
-
-        results = self.db.query(Transaction).filter(
-            Transaction.user_id == user_id, # Segurança
-            Transaction.type == TransactionType.EXPENSE,
-            Transaction.status == TransactionStatus.PENDING,
-            Transaction.date >= today,
-            Transaction.date <= limit_date
-        ).order_by(Transaction.date.asc()).limit(10).all()
-
-        return results
+        total_expenses = sum(r.total for r in results) if results else 0
+        
+        chart_data = []
+        if total_expenses > 0:
+            for name, color, total in results:
+                val = float(total) if total else 0.0
+                percent = (val / float(total_expenses)) * 100
+                chart_data.append({
+                    "name": name,
+                    "value": val,
+                    "color": color,
+                    "percent": round(percent, 1)
+                })
+        
+        return chart_data
