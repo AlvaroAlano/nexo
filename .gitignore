@@ -1,0 +1,14 @@
+# Python / Backend
+__pycache__/
+*.py[cod]
+venv/
+.env
+db.sqlite3
+*.sqlite3
+nexo # seu arquivo de banco atual
+
+# Node / Frontend
+node_modules/
+dist/
+.DS_Store
+.vscode/

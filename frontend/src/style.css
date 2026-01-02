@@ -1,0 +1,78 @@
+@import "tailwindcss";
+
+:root {
+  /* --- PALETA LIGHT (AZUL TECH SUAVE) --- */
+  
+  /* Fundo e Superfícies */
+  --bg-app: #F0F4F8;          /* Slate-50 azulado */
+  --bg-surface: #FFFFFF;      /* Branco puro */
+  --bg-hover: #E2E8F0;        /* Slate-200 */
+  --border: #CBD5E1;          /* Slate-300 */
+  
+  /* Texto */
+  --text-main: #0F172A;       /* Slate-900 (Azul escuro quase preto) */
+  --text-muted: #64748B;      /* Slate-500 */
+
+  /* Cores da Marca (Brand) - O Azul Principal */
+  --color-primary: #2563EB;       /* Blue-600 (Cor principal vibrante) */
+  --color-primary-hover: #1D4ED8; /* Blue-700 */
+  --color-primary-light: #EFF6FF; /* Blue-50 (Fundo bem clarinho) */
+  
+  /* Semântica (Sucesso/Erro) */
+  --color-success: #10B981;       /* Emerald-500 */
+  --color-danger: #F43F5E;        /* Rose-500 */
+  --color-warning: #F59E0B;       /* Amber-500 */
+
+  /* Sombra com toque azulado */
+  --shadow-card: 0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 2px 4px -1px rgba(15, 23, 42, 0.03);
+}
+
+.dark {
+  /* --- PALETA DARK (MIDNIGHT BLUE) --- */
+  
+  /* Fundo e Superfícies - Azul Profundo */
+  --bg-app: #020617;          /* Slate-950 (Quase preto, fundo azulado) */
+  --bg-surface: #0F172A;      /* Slate-900 (Azul escuro corporativo) */
+  --bg-hover: #1E293B;        /* Slate-800 */
+  --border: #1E293B;          /* Slate-800 (Borda sutil) */
+  
+  /* Texto */
+  --text-main: #F8FAFC;       /* Slate-50 */
+  --text-muted: #94A3B8;      /* Slate-400 */
+
+  /* Cores da Marca (Brand) - Azul Neon/Brilhante */
+  --color-primary: #3B82F6;       /* Blue-500 (Mais claro para fundo escuro) */
+  --color-primary-hover: #60A5FA; /* Blue-400 */
+  --color-primary-light: rgba(59, 130, 246, 0.1); /* Blue-500 com transparência */
+
+  /* Sombra */
+  --shadow-card: 0 10px 15px -3px rgba(2, 6, 23, 0.5), 0 4px 6px -2px rgba(2, 6, 23, 0.3);
+}
+
+/* Reset Global */
+html, body, #app {
+  height: 100%;
+  width: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden; 
+  background-color: var(--bg-app);
+  color: var(--text-main);
+  font-family: 'Plus Jakarta Sans', sans-serif; 
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Scrollbar Personalizada */
+.custom-scroll::-webkit-scrollbar { width: 4px; }
+.custom-scroll::-webkit-scrollbar-track { background: transparent; }
+.custom-scroll::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Utilitários */
+.font-numeric { font-feature-settings: "tnum"; font-variant-numeric: tabular-nums; letter-spacing: -0.03em; }
+
+/* Classes Utilitárias para usar no HTML (Simulando Tailwind config) */
+/* Isso permite usar 'text-primary' ou 'bg-primary' */
+.text-primary { color: var(--color-primary); }
+.bg-primary { background-color: var(--color-primary); }
+.hover\:bg-primary:hover { background-color: var(--color-primary); }
+.border-primary { border-color: var(--color-primary); }
