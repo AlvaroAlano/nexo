@@ -6,16 +6,15 @@ from datetime import date
 import calendar
 from pydantic import BaseModel
 
-# Imports do seu projeto
 from app.db.session import get_db
-from app.models.tables import CreditCard, Transaction, CreditCardBill, User
+# Importamos TransactionStatus para usar Enums
+from app.models.tables import CreditCard, Transaction, CreditCardBill, User, TransactionStatus
 from app.api.security import get_current_user
 from app.schemas.credit_card import CreditCardCreate, CreditCardResponse
 from app.schemas.transaction import TransactionResponse
 
 router = APIRouter()
 
-# Schema local para a listagem com totais calculados
 class CreditCardWithInvoice(BaseModel):
     id: int
     name: str
@@ -29,12 +28,12 @@ class CreditCardWithInvoice(BaseModel):
     class Config:
         from_attributes = True
 
-# --- ROTA: CRIAR CARTÃO (Agora vincula ao usuário) ---
+# --- ROTA: CRIAR CARTÃO ---
 @router.post("/", response_model=CreditCardResponse)
 def create_credit_card(
     card: CreditCardCreate, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user) # Segurança
+    current_user: User = Depends(get_current_user)
 ):
     db_card = CreditCard(
         name=card.name,
@@ -42,20 +41,20 @@ def create_credit_card(
         closing_day=card.closing_day,
         due_day=card.due_day,
         color=card.color,
-        user_id=current_user.id # <--- VINCULA AO DONO
+        user_id=current_user.id
     )
     db.add(db_card)
     db.commit()
     db.refresh(db_card)
     return db_card
 
-# --- ROTA: LISTAR CARTÕES (Filtra apenas os do usuário) ---
+# --- ROTA: LISTAR CARTÕES ---
 @router.get("/", response_model=List[CreditCardWithInvoice])
 def read_credit_cards(
     month: int = None, 
     year: int = None, 
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user) # Segurança
+    current_user: User = Depends(get_current_user)
 ):
     try:
         if not month or not year:
@@ -67,13 +66,12 @@ def read_credit_cards(
         start_date = date(year, month, 1)
         end_date = date(year, month, last_day)
 
-        # FILTRO DE SEGURANÇA: Apenas cartões deste usuário
         cards = db.query(CreditCard).filter(CreditCard.user_id == current_user.id).all()
         
         result = []
 
         for card in cards:
-            # LIQUIDEZ: Gasto do Mês (JOIN com Faturas)
+            # Gasto do Mês
             current_invoice = db.query(func.sum(Transaction.amount)).join(
                 CreditCardBill, Transaction.bill_id == CreditCardBill.id
             ).filter(
@@ -83,12 +81,12 @@ def read_credit_cards(
                 Transaction.payment_method == 'credito'
             ).scalar() or 0.0
             
-            # SOLVÊNCIA: Dívida Total (JOIN com Faturas)
+            # Dívida Total (Usando Enum PENDING)
             total_debt = db.query(func.sum(Transaction.amount)).join(
                 CreditCardBill, Transaction.bill_id == CreditCardBill.id
             ).filter(
                 CreditCardBill.card_id == card.id,
-                Transaction.status == 'pendente' 
+                Transaction.status == TransactionStatus.PENDING 
             ).scalar() or 0.0
             
             result.append({
@@ -105,10 +103,10 @@ def read_credit_cards(
         return result
 
     except Exception as e:
-        print(f"ERRO FATAL EM READ_CREDIT_CARDS: {e}")
+        print(f"ERRO READ_CREDIT_CARDS: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-# --- ROTA: EDITAR CARTÃO (NOVA - SEGURA) ---
+# --- ROTA: EDITAR CARTÃO ---
 @router.put("/{card_id}", response_model=CreditCardResponse)
 def update_credit_card(
     card_id: int,
@@ -116,7 +114,6 @@ def update_credit_card(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user)
 ):
-    # Busca o cartão garantindo que pertence ao usuário logado
     card = db.query(CreditCard).filter(
         CreditCard.id == card_id,
         CreditCard.user_id == current_user.id
@@ -125,10 +122,9 @@ def update_credit_card(
     if not card:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Cartão não encontrado ou acesso não autorizado."
+            detail="Cartão não encontrado."
         )
 
-    # Atualiza os campos
     card.name = card_in.name
     card.limit = card_in.limit
     card.closing_day = card_in.closing_day
@@ -149,10 +145,8 @@ def read_card_invoice_transactions(
     month: int,
     year: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user) # Apenas autenticação por enquanto
+    current_user: User = Depends(get_current_user)
 ):
-    # Opcional: Poderíamos verificar se card_id pertence ao user aqui também para blindar 100%
-    
     _, last_day = calendar.monthrange(year, month)
     start_date = date(year, month, 1)
     end_date = date(year, month, last_day)

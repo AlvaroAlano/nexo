@@ -5,7 +5,8 @@ from datetime import date
 
 from app.db.session import get_db
 from app.api.security import get_current_user
-from app.models.tables import Goal, User, Transaction, Account 
+# Adicione TransactionType e TransactionStatus aqui
+from app.models.tables import Goal, User, Transaction, Account, TransactionType, TransactionStatus
 from app.schemas.goal import GoalCreate, GoalResponse, GoalUpdate, GoalDeposit
 
 router = APIRouter()
@@ -21,7 +22,6 @@ def create_goal(goal: GoalCreate, db: Session = Depends(get_db), current_user: U
     last_goal = db.query(Goal).filter(Goal.user_id == current_user.id).order_by(Goal.order_index.desc()).first()
     new_order = (last_goal.order_index + 1) if last_goal else 0
     
-    # Excluímos order_index do dict para não duplicar o argumento
     db_goal = Goal(
         **goal.dict(exclude={'order_index'}), 
         user_id=current_user.id, 
@@ -67,7 +67,7 @@ def reorder_goals(id_list: List[int], db: Session = Depends(get_db), current_use
     db.commit()
     return {"detail": "Ordem atualizada"}
 
-# 6. DEPÓSITO (Blindado)
+# 6. DEPÓSITO (Corrigido com Enums)
 @router.post("/{goal_id}/deposit", response_model=GoalResponse)
 def deposit_to_goal(
     goal_id: int, 
@@ -83,26 +83,29 @@ def deposit_to_goal(
     
     transaction = Transaction(
         description=f"Depósito Meta: {db_goal.name}",
-        amount=-abs(deposit.amount), # Garante negativo
+        amount=-abs(deposit.amount), 
         date=date.today(),
-        type="despesa",
+        type=TransactionType.EXPENSE, # <--- CORRIGIDO: Era "despesa"
         payment_method="saldo",
+        status=TransactionStatus.PAID, # Importante definir como pago
         account_id=account.id if account else None,
         user_id=current_user.id,
         category_id=None
     )
     db.add(transaction)
 
+    # Nota: O trigger automático no tables.py já deve atualizar o saldo da conta,
+    # mas mantemos aqui por segurança da lógica de meta.
     if account:
         account.current_balance -= abs(deposit.amount)
 
     db_goal.current_amount += abs(deposit.amount)
 
     db.commit()
-    db.refresh(db_goal) # Recarrega o objeto limpo do banco
+    db.refresh(db_goal)
     return db_goal
 
-# 7. SAQUE / RESGATE (Blindado)
+# 7. SAQUE / RESGATE (Corrigido com Enums)
 @router.post("/{goal_id}/withdraw", response_model=GoalResponse)
 def withdraw_from_goal(
     goal_id: int, 
@@ -115,17 +118,17 @@ def withdraw_from_goal(
         raise HTTPException(status_code=404, detail="Meta não encontrada")
 
     if db_goal.current_amount < deposit.amount:
-        # Se tentar sacar mais do que tem, erro 400 (Bad Request)
         raise HTTPException(status_code=400, detail="Saldo insuficiente na meta")
 
     account = db.query(Account).filter(Account.user_id == current_user.id).first()
 
     transaction = Transaction(
         description=f"Resgate Meta: {db_goal.name}",
-        amount=abs(deposit.amount), # Garante positivo
+        amount=abs(deposit.amount),
         date=date.today(),
-        type="receita",
+        type=TransactionType.INCOME, # <--- CORRIGIDO: Era "receita"
         payment_method="saldo",
+        status=TransactionStatus.PAID,
         account_id=account.id if account else None,
         user_id=current_user.id,
         category_id=None
