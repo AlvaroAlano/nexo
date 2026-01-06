@@ -1,9 +1,13 @@
 <script setup>
-import { ref, computed } from 'vue';
+import { ref, computed, onMounted } from 'vue';
 import { useRouter } from 'vue-router';
+import { useAuthStore } from '../stores/auth'; // <--- Importa a Store
+import api from '../services/api'; // <--- Importa a API
 import { Mail, Lock, Eye, EyeOff, Fingerprint, ChevronRight, AlertCircle } from 'lucide-vue-next';
 
 const router = useRouter();
+const authStore = useAuthStore(); // <--- Inicia a Store
+
 const isRegister = ref(false);
 const showPassword = ref(false);
 const email = ref('');
@@ -11,42 +15,83 @@ const password = ref('');
 const isLoading = ref(false);
 const errorMessage = ref('');
 
+// Verifica se já está logado ao abrir o app
+onMounted(() => {
+  // Graças ao persist: true, se o usuário fechou o app logado,
+  // o token estará aqui e redirecionamos na hora!
+  if (authStore.token) {
+    router.push('/dashboard');
+  }
+});
+
 const toggleMode = () => {
     isRegister.value = !isRegister.value;
     errorMessage.value = '';
 };
 
-const handleAuth = () => {
-  // --- MODO DEV: Validação Desativada ---
-  // Se quiser validar no futuro, descomente as linhas abaixo:
-  /*
+const handleAuth = async () => {
+  // Validação Básica
   if (!email.value || !password.value) {
-      errorMessage.value = 'Preencha todos os campos para continuar.';
+      errorMessage.value = 'Preencha todos os campos.';
       return;
   }
-  */
   
-  // Limpa erro anterior
   errorMessage.value = '';
   isLoading.value = true;
-  
-  // Simula API e entra no sistema
-  setTimeout(() => {
+
+  try {
+    if (isRegister.value) {
+        // --- FLUXO DE CADASTRO ---
+        await api.post('/users/', {
+            email: email.value,
+            password: password.value,
+            full_name: email.value.split('@')[0] // Pega o nome do e-mail provisoriamente
+        });
+        
+        // Se der certo, faz o login automático em seguida
+        await performLogin(); 
+
+    } else {
+        // --- FLUXO DE LOGIN ---
+        await performLogin();
+    }
+  } catch (error) {
+    console.error(error);
+    // Tenta pegar a mensagem de erro do Backend ou usa uma genérica
+    errorMessage.value = error.response?.data?.detail || 'Erro ao conectar. Verifique seus dados.';
+  } finally {
     isLoading.value = false;
-    router.push('/dashboard'); 
-  }, 800);
+  }
+};
+
+// Função auxiliar para Login (Backend FastAPI padrão)
+const performLogin = async () => {
+    // O FastAPI espera o login como Form Data (OAuth2 standard)
+    const formData = new URLSearchParams();
+    formData.append('username', email.value);
+    formData.append('password', password.value);
+
+    // 1. Pega o Token
+    const { data } = await api.post('/login/access-token', formData);
+    
+    // 2. Salva na Store (O persist: true vai salvar no celular automaticamente!)
+    // Vamos salvar o email provisoriamente como usuário até termos uma rota /me
+    authStore.setLoginData({ email: email.value }, data.access_token);
+    
+    // 3. Redireciona
+    router.push('/dashboard');
 };
 
 const handleBiometric = () => {
-    // Atalho para entrar direto também
-    router.push('/dashboard');
+    // Futuro: Implementar WebAuthn
+    alert('Biometria em breve!');
 };
 
 const handleSocialLogin = (provider) => {
     alert(`Login com ${provider} em breve.`);
 };
 
-// Classes dinâmicas (mantive a lógica visual caso você digite algo)
+// Classes dinâmicas (Mantidas do seu código original)
 const inputBorderClass = computed(() => 
     errorMessage.value 
     ? 'border-red-500/50 focus:border-red-500 focus:ring-red-500/20' 
