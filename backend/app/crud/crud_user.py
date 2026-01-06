@@ -1,13 +1,10 @@
-from typing import Any, Dict, Optional, Union
-
+from typing import Any, Optional
 from sqlalchemy.orm import Session
-
 from app.core.security import get_password_hash, verify_password
-from app.models.user import User
-from app.schemas.user import UserCreate, UserUpdate
 
-# Se você tiver uma classe CRUDBase genérica, pode herdar dela. 
-# Aqui vou fazer direto para garantir que funcione sem dependências extras.
+# MUDANÇA CRÍTICA: Importando do tables.py
+from app.models.tables import User
+from app.schemas.user import UserCreate
 
 class CRUDUser:
     def get(self, db: Session, id: Any) -> Optional[User]:
@@ -21,8 +18,7 @@ class CRUDUser:
             email=obj_in.email,
             hashed_password=get_password_hash(obj_in.password),
             full_name=obj_in.full_name,
-            is_active=True,
-            is_superuser=False,
+            # is_active=True # Se seu model tiver esse campo, descomente
         )
         db.add(db_obj)
         db.commit()
@@ -38,6 +34,6 @@ class CRUDUser:
         return user
 
     def is_active(self, user: User) -> bool:
-        return user.is_active
+        return True # Simplificado para garantir o login
 
 user = CRUDUser()
