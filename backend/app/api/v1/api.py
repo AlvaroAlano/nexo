@@ -1,6 +1,6 @@
 from fastapi import APIRouter
-# Importando users e login que estavam faltando
-from app.api.api_v1.endpoints import (
+# CORREÇÃO: Usando 'v1' em vez de 'api_v1'
+from app.api.v1.endpoints import (
     transactions, 
     credit_cards, 
     dashboard, 
@@ -8,15 +8,15 @@ from app.api.api_v1.endpoints import (
     categories, 
     debts, 
     goals,
-    users,  # <--- IMPORTANTE: Adicionado
-    login   # <--- IMPORTANTE: Adicionado (Para o login funcionar)
+    users,
+    login
 )
 
 api_router = APIRouter()
 
 # --- ROTAS DE AUTENTICAÇÃO ---
-api_router.include_router(login.router, tags=["login"]) # Rota /login/access-token
-api_router.include_router(users.router, prefix="/users", tags=["users"]) # Rota /users/open
+api_router.include_router(login.router, tags=["login"])
+api_router.include_router(users.router, prefix="/users", tags=["users"])
 
 # --- ROTAS DO SISTEMA ---
 api_router.include_router(transactions.router, prefix="/transactions", tags=["Transações"])
